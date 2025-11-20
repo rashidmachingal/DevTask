@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import Product from "@/models/Product";
 import { connectToDatabase } from "@/lib/mongodb";
 
-interface Params {
-  params: {
-    id: string;
-  };
-}
+/**
+ * @typedef {Object} Params
+ * @property {Object} params
+ * @property {string} params.id
+ */
 
-export async function GET(request: NextRequest, context: any) {
+export async function GET(request, context) {
   const params = await context.params;
   const { id } = params;
   await connectToDatabase();
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest, context: any) {
   return NextResponse.json(product);
 }
 
-export async function PUT(req: NextRequest, { params }: Params) {
+export async function PUT(req, { params }) {
   await connectToDatabase();
   const updates = await req.json();
 
@@ -37,7 +37,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
   return NextResponse.json(product);
 }
 
-export async function DELETE(_: NextRequest, { params }: Params) {
+export async function DELETE(_, { params }) {
   await connectToDatabase();
   const result = await Product.findByIdAndDelete(params.id);
 
