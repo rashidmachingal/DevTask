@@ -8,10 +8,11 @@ interface Params {
   };
 }
 
-export async function GET(_: NextRequest, { params }: Params) {
+export async function GET(request: NextRequest, context: { params: { id: string } }) {
+  const { id } = context.params; // context.params should be an object, not a Promise
   await connectToDatabase();
 
-  const product = await Product.findById(params.id);
+  const product = await Product.findById(id);
   if (!product) {
     return NextResponse.json({ message: "Product not found" }, { status: 404 });
   }
