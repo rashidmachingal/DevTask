@@ -2,12 +2,15 @@
 
 import Image from "next/image";
 import { useMemo, useState, useCallback, useEffect } from "react";
+import { pdf } from "@react-pdf/renderer";
+import ProductPdfDocument from "./ProductPdfDocument";
 import {
   BlockStack,
   Box,
   Card,
   ChoiceList,
   Filters,
+  FormLayout,
   IndexTable,
   InlineGrid,
   InlineStack,
@@ -18,11 +21,24 @@ import {
   SkeletonDisplayText,
   Tabs,
   Text,
+  TextField,
   Thumbnail,
+  Toast,
+  useToast,
 } from "@shopify/polaris";
 
 // Polaris-like table size that keeps pagination compact
 const PAGE_SIZE = 10;
+
+const productFormInitialState = {
+  title: "",
+  description: "",
+  image: "",
+  category: "",
+  price: "",
+  rating: "",
+  reviews: "",
+};
 
 const formatCategoryLabel = (value) =>
   value
@@ -32,79 +48,65 @@ const formatCategoryLabel = (value) =>
         .join(" ")
     : "";
 
+const getRandomProductFromFakeStore = async () => {
+  const randomId = Math.floor(Math.random() * 20) + 1;
+  const response = await fetch(`https://fakestoreapi.com/products/${randomId}`);
+  if (!response.ok) throw new Error("Failed to fetch random product");
+  return response.json();
+};
+
 export default function ProductsPage() {
-  const [selectedTab, setSelectedTab] = useState(0);
   const [queryValue, setQueryValue] = useState("");
   const [selectedCategories, setSelectedCategories] = useState([]);
+  const [selectedTabCategory, setSelectedTabCategory] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
-  const [activeProduct, setActiveProduct] = useState(null);
   const [products, setProducts] = useState([]);
+  const [totalItems, setTotalItems] = useState(0);
+  const [availableCategories, setAvailableCategories] = useState([]);
+  const [categoryCounts, setCategoryCounts] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeProduct, setActiveProduct] = useState(null);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [productForm, setProductForm] = useState(productFormInitialState);
+  const [formErrors, setFormErrors] = useState({});
+  const [savingProduct, setSavingProduct] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [feedback, setFeedback] = useState({ message: "", tone: "" });
+  const [toastActive, setToastActive] = useState(false);
 
-  // Fetch Shopify-like catalog data from Fakestore API
-  useEffect(() => {
-    let mounted = true;
-    fetch("https://fakestoreapi.com/products")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("Unable to load products");
-        }
-        return response.json();
-      })
-      .then((data) => {
-        if (!mounted) return;
-        const normalized = data.map((item) => ({
-          id: String(item.id),
-          title: item.title,
-          image: item.image,
-          category: item.category,
-          price: item.price,
-          description: item.description,
-          ratingRate: item.rating?.rate ?? null,
-          ratingCount: item.rating?.count ?? null,
-        }));
-        setProducts(normalized);
-        setCurrentPage(1);
-        setError("");
-      })
-      .catch((err) => {
-        if (!mounted) return;
-        setError(err.message || "Failed to fetch products");
-      })
-      .finally(() => {
-        if (!mounted) return;
-        setLoading(false);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  // Build tab set dynamically from API categories so UI mirrors data
-  const tabs = useMemo(() => {
-    const uniqueCategories = Array.from(
-      new Set(products.map((product) => product.category))
-    );
-    return [
+  const tabs = useMemo(
+    () => [
       { id: "all", content: "All" },
-      ...uniqueCategories.map((category) => ({
+      ...availableCategories.map((category) => ({
         id: category,
         content: formatCategoryLabel(category),
       })),
-    ];
-  }, [products]);
+    ],
+    [availableCategories]
+  );
+
+  useEffect(() => {
+    if (
+      selectedTabCategory !== "all" &&
+      !availableCategories.includes(selectedTabCategory)
+    ) {
+      setSelectedTabCategory("all");
+    }
+  }, [availableCategories, selectedTabCategory]);
+
+  const selectedTabIndex = useMemo(() => {
+    const index = tabs.findIndex((tab) => tab.id === selectedTabCategory);
+    return index === -1 ? 0 : index;
+  }, [tabs, selectedTabCategory]);
 
   const categoryChoices = useMemo(
     () =>
-      Array.from(new Set(products.map(({ category }) => category))).map(
-        (category) => ({
-          label: formatCategoryLabel(category),
-          value: category,
-        })
-      ),
-    [products]
+      availableCategories.map((category) => ({
+        label: formatCategoryLabel(category),
+        value: category,
+      })),
+    [availableCategories]
   );
 
   const appliedFilters = useMemo(() => {
@@ -130,6 +132,7 @@ export default function ProductsPage() {
         <ChoiceList
           title="Category"
           titleHidden
+          allowMultiple
           choices={categoryChoices}
           selected={selectedCategories}
           onChange={(values) => {
@@ -146,144 +149,358 @@ export default function ProductsPage() {
     plural: "products",
   };
 
-  // Apply tab/category/search filters locally for snappy UX
-  const filteredProducts = useMemo(() => {
-    const currentTab = tabs[selectedTab]?.id || "all";
-    return products.filter((product) => {
-      const matchesTab =
-        currentTab === "all" || product.category === currentTab;
+  const fetchProducts = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        pageSize: PAGE_SIZE.toString(),
+      });
 
-      const matchesQuery = product.title
-        .toLowerCase()
-        .includes(queryValue.toLowerCase().trim());
+      if (queryValue.trim()) {
+        params.set("search", queryValue.trim());
+      }
 
-      const matchesCategoryFilter =
-        !selectedCategories.length ||
-        selectedCategories.includes(product.category);
+      const categoriesToSend = new Set(selectedCategories);
+      if (selectedTabCategory !== "all") {
+        categoriesToSend.add(selectedTabCategory);
+      }
+      categoriesToSend.forEach((category) => params.append("category", category));
 
-      return matchesTab && matchesQuery && matchesCategoryFilter;
-    });
-  }, [products, queryValue, selectedCategories, selectedTab, tabs]);
+      const response = await fetch(`/api/products?${params.toString()}`, {
+        cache: "no-store",
+      });
 
-  const totalItems = filteredProducts.length;
+      if (!response.ok) {
+        throw new Error("Unable to load products");
+      }
+
+      const data = await response.json();
+      setProducts(data.items || []);
+      setTotalItems(data.total || 0);
+      setAvailableCategories(data.categories || []);
+      setCategoryCounts(data.categoryCounts || {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load products");
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPage, queryValue, selectedCategories, selectedTabCategory]);
+
+  useEffect(() => {
+    fetchProducts();
+  }, [fetchProducts]);
+
+  const tableRowsMarkup = products.map(
+    ({ _id, id, title, image, category, price, rating, reviews, description }, index) => {
+      const rowId = id || _id;
+      return (
+        <IndexTable.Row
+          id={rowId}
+          key={rowId}
+          position={index}
+          onClick={() =>
+            setActiveProduct({
+              id: rowId,
+              title,
+              image,
+              category,
+              price,
+              rating,
+              reviews,
+              description,
+            })
+          }
+        >
+          <IndexTable.Cell>
+            <InlineStack gap="300" align="center">
+              <Thumbnail source={image} alt={title} size="small" />
+              <Box
+                as="div"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <Text as="span" tone="base" fontWeight="medium">
+                  {title}
+                </Text>
+              </Box>
+            </InlineStack>
+          </IndexTable.Cell>
+          <IndexTable.Cell>
+            <Text as="span" tone="subdued">
+              {formatCategoryLabel(category)}
+            </Text>
+          </IndexTable.Cell>
+          <IndexTable.Cell>
+            <Text as="span" tone="base" fontWeight="medium">
+              {typeof price === "number" ? `$${price.toFixed(2)}` : "—"}
+            </Text>
+          </IndexTable.Cell>
+          <IndexTable.Cell>
+            <Text as="span" tone="subdued">
+              {rating ?? "—"}
+            </Text>
+          </IndexTable.Cell>
+          <IndexTable.Cell>
+            <Text as="span" tone="subdued">
+              {reviews ?? "—"}
+            </Text>
+          </IndexTable.Cell>
+        </IndexTable.Row>
+      );
+    }
+  );
+
   const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
 
-  // Slice the filtered results for the current page
-  const paginatedProducts = useMemo(() => {
-    const startIndex = (currentPage - 1) * PAGE_SIZE;
-    return filteredProducts.slice(startIndex, startIndex + PAGE_SIZE);
-  }, [filteredProducts, currentPage]);
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const handleQueryChange = useCallback((value) => {
     setQueryValue(value);
     setCurrentPage(1);
   }, []);
+
   const handleQueryClear = useCallback(() => {
     setQueryValue("");
     setCurrentPage(1);
   }, []);
+
   const dismissProductModal = useCallback(() => setActiveProduct(null), []);
 
-  const tabsWithCounts = useMemo(
-    () =>
-      tabs.map((tab) => ({
-        ...tab,
-        badge:
-          tab.id === "all"
-            ? products.length
-            : products.filter((product) => product.category === tab.id).length,
-      })),
-    [products, tabs]
-  );
+  const handleCreateProduct = useCallback(async () => {
+    const errors = {};
 
-  const tableRowsMarkup = paginatedProducts.map(
-    (
-      {
-        id,
-        title,
-        image,
-        category,
-        price,
-        description,
-        ratingRate,
-        ratingCount,
-      },
-      index
-    ) => (
-      <IndexTable.Row
-        id={id}
-        key={id}
-        position={index}
-        onClick={() =>
-          setActiveProduct({
-            id,
-            title,
-            image,
-            category,
-            price,
-            description,
-            ratingRate,
-            ratingCount,
-          })
-        }
-      >
-        <IndexTable.Cell>
-          <InlineStack gap="300" align="center">
-            <Thumbnail source={image} alt={title} size="small" />
+    if (!productForm.title.trim()) errors.title = "Title is required";
+    if (!productForm.description.trim()) {
+      errors.description = "Description is required";
+    }
+    if (!productForm.image.trim()) errors.image = "Image URL is required";
+    if (!productForm.category.trim()) errors.category = "Category is required";
 
-            <Box
-              as="div"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <Text as="span" tone="base" fontWeight="medium">
-                {title}
-              </Text>
-            </Box>
-          </InlineStack>
-        </IndexTable.Cell>
-        <IndexTable.Cell>
-          <Text as="span" tone="subdued">
-            {formatCategoryLabel(category)}
-          </Text>
-        </IndexTable.Cell>
-        <IndexTable.Cell>
-          <Text as="span" tone="base" fontWeight="medium">
-            {typeof price === "number" ? `$${price.toFixed(2)}` : "—"}
-          </Text>
-        </IndexTable.Cell>
-        <IndexTable.Cell>
-          <Text as="span" tone="subdued">
-            {ratingRate ?? "—"}
-          </Text>
-        </IndexTable.Cell>
-        <IndexTable.Cell>
-          <Text as="span" tone="subdued">
-            {ratingCount ?? "—"}
-          </Text>
-        </IndexTable.Cell>
-      </IndexTable.Row>
-    )
-  );
+    const priceValue = Number(productForm.price);
+    if (Number.isNaN(priceValue) || priceValue < 0) {
+      errors.price = "Price must be a positive number";
+    }
+
+    if (productForm.rating !== "") {
+      const ratingValue = Number(productForm.rating);
+      if (
+        Number.isNaN(ratingValue) ||
+        ratingValue < 0 ||
+        ratingValue > 5
+      ) {
+        errors.rating = "Rating must be between 0 and 5";
+      }
+    }
+
+    if (productForm.reviews !== "") {
+      const reviewsValue = Number(productForm.reviews);
+      if (Number.isNaN(reviewsValue) || reviewsValue < 0) {
+        errors.reviews = "Reviews must be 0 or greater";
+      }
+    }
+
+    setFormErrors(errors);
+
+    if (Object.keys(errors).length) {
+      return;
+    }
+
+    setSavingProduct(true);
+    setFeedback({ message: "", tone: "" });
+
+    try {
+      const payload = {
+        title: productForm.title.trim(),
+        description: productForm.description.trim(),
+        image: productForm.image.trim(),
+        category: productForm.category.trim(),
+        price: Number(productForm.price),
+        rating:
+          productForm.rating === "" ? null : Number(productForm.rating),
+        reviews:
+          productForm.reviews === "" ? 0 : Number(productForm.reviews),
+      };
+
+      const response = await fetch("/api/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.message || "Unable to save product");
+      }
+
+      setProductForm(productFormInitialState);
+      setFormErrors({});
+      setIsAddModalOpen(false);
+      setFeedback({ message: "Product created successfully", tone: "success" });
+      fetchProducts();
+    } catch (err) {
+      setFeedback({
+        message: err instanceof Error ? err.message : "Failed to save product",
+        tone: "critical",
+      });
+    } finally {
+      setSavingProduct(false);
+    }
+  }, [productForm, fetchProducts]);
+
+  const handleExport = useCallback(async () => {
+    if (!totalItems) return;
+
+    setExporting(true);
+    setFeedback({ message: "", tone: "" });
+
+    try {
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: Math.max(totalItems, PAGE_SIZE).toString(),
+      });
+
+      if (queryValue.trim()) {
+        params.set("search", queryValue.trim());
+      }
+
+      const categoriesToSend = new Set(selectedCategories);
+      if (selectedTabCategory !== "all") {
+        categoriesToSend.add(selectedTabCategory);
+      }
+      categoriesToSend.forEach((category) => params.append("category", category));
+
+      const response = await fetch(`/api/products?${params.toString()}`, {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("Unable to fetch products for export");
+      }
+
+      const data = await response.json();
+      const pdfBlob = await pdf(
+        <ProductPdfDocument
+          products={(data.items || []).map((item) => ({
+            id: item.id || item._id,
+            title: item.title,
+            image: item.image,
+            category: item.category,
+            price: item.price,
+            rating: item.rating,
+            reviews: item.reviews,
+          }))}
+        />
+      ).toBlob();
+
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `products-${Date.now()}.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setFeedback({ message: "PDF exported successfully", tone: "success" });
+    } catch (err) {
+      setFeedback({
+        message:
+          err instanceof Error ? err.message : "Failed to export products",
+        tone: "critical",
+      });
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    queryValue,
+    selectedCategories,
+    selectedTabCategory,
+    totalItems,
+  ]);
+
+  const handleAddModalClose = () => {
+    setIsAddModalOpen(false);
+    setProductForm(productFormInitialState);
+    setFormErrors({});
+  };
+
+  const handleAddProductClick = useCallback(async () => {
+    setIsAddModalOpen(true);
+    setProductForm(productFormInitialState);
+    setFormErrors({});
+    try {
+      const product = await getRandomProductFromFakeStore();
+      setProductForm({
+        title: product.title || "",
+        description: product.description || "",
+        image: product.image || "",
+        category: product.category || "",
+        price: product.price?.toString() || "",
+        rating: product.rating?.rate?.toString() || "",
+        reviews: product.rating?.count?.toString() || "",
+      });
+    } catch (err) {
+      // Optionally handle error (e.g., show a message)
+    }
+  }, []);
+
+  useEffect(() => {
+    if (feedback.message) {
+      setToastActive(true);
+    }
+  }, [feedback.message]);
+
+  const handleToastDismiss = () => {
+    setToastActive(false);
+    setFeedback({ message: "", tone: "" });
+  };
 
   return (
     <Page
-      title="Products List"
-      primaryAction={{ content: "Add product", disabled: true }}
-      secondaryActions={[{ content: "Export", disabled: true }]}
+      title="Products"
+      primaryAction={{
+        content: "Add product",
+        onAction: handleAddProductClick, // <-- use new handler
+      }}
+      secondaryActions={[
+        {
+          content: "Export",
+          onAction: handleExport,
+          disabled: loading || !totalItems,
+          loading: exporting,
+        },
+      ]}
     >
       <BlockStack gap="4">
+        {/* Replace Card feedback with Toast */}
+        {toastActive && feedback.message ? (
+          <Toast
+            content={feedback.message}
+            onDismiss={handleToastDismiss}
+            tone={feedback.tone === "critical" ? "critical" : "success"}
+          />
+        ) : null}
         <Card padding="0">
           <Tabs
-            tabs={tabsWithCounts}
-            selected={selectedTab}
+            tabs={tabs.map((tab) => ({
+              ...tab,
+              badge:
+                tab.id === "all"
+                  ? totalItems
+                  : categoryCounts[tab.id] || 0,
+            }))}
+            selected={selectedTabIndex}
             onSelect={(index) => {
-              setSelectedTab(index);
+              const tab = tabs[index];
+              setSelectedTabCategory(tab?.id ?? "all");
               setCurrentPage(1);
             }}
             fitted
@@ -306,14 +523,11 @@ export default function ProductsPage() {
           {loading ? (
             <Card>
               <BlockStack gap="400" padding="500">
-                {/* Skeleton header mirrors table columns */}
                 <InlineGrid columns={{ xs: 1, sm: 2, md: 3 }} gap="400">
                   <SkeletonDisplayText size="small" />
                   <SkeletonDisplayText size="small" />
                   <SkeletonDisplayText size="small" />
                 </InlineGrid>
-
-                {/* Skeleton rows mimic table stripes */}
                 <BlockStack gap="300">
                   {Array.from({ length: 6 }).map((_, index) => (
                     <InlineGrid
@@ -336,7 +550,7 @@ export default function ProductsPage() {
           ) : (
             <IndexTable
               resourceName={resourceName}
-              itemCount={paginatedProducts.length}
+              itemCount={products.length}
               headings={[
                 { title: "Product" },
                 { title: "Category" },
@@ -352,13 +566,12 @@ export default function ProductsPage() {
           )}
           {!loading && (
             <Box padding="200" paddingBlockStart="200" paddingBlockEnd="2">
-              {/* Compact Polaris pagination summary */}
               <InlineStack align="space-between">
                 <Text tone="subdued">
                   {totalItems
                     ? `Showing ${(currentPage - 1) * PAGE_SIZE + 1}-${Math.min(
                         totalItems,
-                        (currentPage - 1) * PAGE_SIZE + paginatedProducts.length
+                        (currentPage - 1) * PAGE_SIZE + products.length
                       )} of ${totalItems}`
                     : "No products available"}
                 </Text>
@@ -381,7 +594,7 @@ export default function ProductsPage() {
               <Text tone="critical">{error}</Text>
             </Box>
           ) : null}
-          {!loading && !error && filteredProducts.length === 0 ? (
+          {!loading && !error && !totalItems ? (
             <Box padding="5">
               <Text tone="subdued">No products match your filters.</Text>
             </Box>
@@ -398,7 +611,6 @@ export default function ProductsPage() {
           >
             <Modal.Section>
               <BlockStack gap="600">
-                {/* LARGE IMAGE */}
                 <InlineStack align="center">
                   <Box maxWidth="300px">
                     <Image
@@ -406,6 +618,7 @@ export default function ProductsPage() {
                       alt={activeProduct.title}
                       width={600}
                       height={600}
+                      unoptimized
                       style={{
                         width: "100%",
                         height: "auto",
@@ -415,8 +628,6 @@ export default function ProductsPage() {
                     />
                   </Box>
                 </InlineStack>
-
-                {/* Product Title */}
                 <Text
                   as="h2"
                   variant="headingMd"
@@ -425,8 +636,6 @@ export default function ProductsPage() {
                 >
                   {activeProduct.title}
                 </Text>
-
-                {/* Product Info */}
                 <BlockStack gap="300">
                   <Text tone="subdued">
                     <b>Category:</b>{" "}
@@ -439,14 +648,12 @@ export default function ProductsPage() {
                       : "—"}
                   </Text>
                   <Text tone="subdued">
-                    <b>Rating:</b> {activeProduct.ratingRate ?? "—"}
+                    <b>Rating:</b> {activeProduct.rating ?? "—"}
                   </Text>
                   <Text tone="subdued">
-                    <b>Reviews:</b> {activeProduct.ratingCount ?? "—"}
+                    <b>Reviews:</b> {activeProduct.reviews ?? "—"}
                   </Text>
                 </BlockStack>
-
-                {/* Description */}
                 <BlockStack gap="200">
                   <Text as="h3" variant="headingSm">
                     Description
@@ -458,6 +665,102 @@ export default function ProductsPage() {
           </Modal>
         ) : null}
       </BlockStack>
+
+      <Modal
+        open={isAddModalOpen}
+        onClose={handleAddModalClose}
+        title="Add product"
+        primaryAction={{
+          content: "Save product",
+          onAction: handleCreateProduct,
+          loading: savingProduct,
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: handleAddModalClose,
+            disabled: savingProduct,
+          },
+        ]}
+      >
+        <Modal.Section>
+          <FormLayout>
+            <TextField
+              label="Title"
+              value={productForm.title}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, title: value }))
+              }
+              autoComplete="off"
+              error={formErrors.title}
+            />
+            <TextField
+              label="Description"
+              value={productForm.description}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, description: value }))
+              }
+              multiline
+              autoComplete="off"
+              error={formErrors.description}
+            />
+            <TextField
+              label="Image URL"
+              value={productForm.image}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, image: value }))
+              }
+              autoComplete="off"
+              error={formErrors.image}
+            />
+            <TextField
+              label="Category"
+              value={productForm.category}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, category: value }))
+              }
+              autoComplete="off"
+              error={formErrors.category}
+            />
+            <TextField
+              label="Price"
+              type="number"
+              min={0}
+              value={productForm.price}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, price: value }))
+              }
+              autoComplete="off"
+              error={formErrors.price}
+            />
+            <TextField
+              label="Rating"
+              type="number"
+              min={0}
+              max={5}
+              value={productForm.rating}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, rating: value }))
+              }
+              autoComplete="off"
+              helpText="Optional — value between 0 and 5"
+              error={formErrors.rating}
+            />
+            <TextField
+              label="Reviews"
+              type="number"
+              min={0}
+              value={productForm.reviews}
+              onChange={(value) =>
+                setProductForm((prev) => ({ ...prev, reviews: value }))
+              }
+              autoComplete="off"
+              helpText="Optional — number of reviews"
+              error={formErrors.reviews}
+            />
+          </FormLayout>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }

@@ -145,15 +145,15 @@ export default function TopBar({ onNavigationToggle }) {
 
   return (
     <PolarisTopBar
-      showNavigationToggle
+      // showNavigationToggle
       userMenu={userMenuMarkup}
-      contextControl={storeSwitcherMarkup}
+      // contextControl={storeSwitcherMarkup}
       // secondaryMenu={notificationsMenuMarkup}
       // searchField={searchFieldMarkup}
       // searchResults={searchResultsMarkup}
       // searchResultsVisible={isSearchActive}
       // onSearchResultsDismiss={handleSearchResultsDismiss}
-      onNavigationToggle={onNavigationToggle}
+      // onNavigationToggle={onNavigationToggle}
     />
   );
 }
