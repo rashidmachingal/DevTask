@@ -9,7 +9,7 @@ interface Params {
 }
 
 export async function GET(request: NextRequest, context: { params: { id: string } }) {
-  const { id } = context.params; // context.params should be an object, not a Promise
+  const { id } = context.params;
   await connectToDatabase();
 
   const product = await Product.findById(id);
