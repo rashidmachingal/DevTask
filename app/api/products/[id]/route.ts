@@ -8,8 +8,9 @@ interface Params {
   };
 }
 
-export async function GET(request: NextRequest, context: { params: { id: string } }) {
-  const { id } = context.params;
+export async function GET(request: NextRequest, context: any) {
+  const params = await context.params;
+  const { id } = params;
   await connectToDatabase();
 
   const product = await Product.findById(id);
