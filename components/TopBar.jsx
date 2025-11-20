@@ -148,11 +148,11 @@ export default function TopBar({ onNavigationToggle }) {
       showNavigationToggle
       userMenu={userMenuMarkup}
       contextControl={storeSwitcherMarkup}
-      secondaryMenu={notificationsMenuMarkup}
-      searchField={searchFieldMarkup}
-      searchResults={searchResultsMarkup}
-      searchResultsVisible={isSearchActive}
-      onSearchResultsDismiss={handleSearchResultsDismiss}
+      // secondaryMenu={notificationsMenuMarkup}
+      // searchField={searchFieldMarkup}
+      // searchResults={searchResultsMarkup}
+      // searchResultsVisible={isSearchActive}
+      // onSearchResultsDismiss={handleSearchResultsDismiss}
       onNavigationToggle={onNavigationToggle}
     />
   );
