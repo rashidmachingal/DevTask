@@ -145,7 +145,7 @@ export default function TopBar({ onNavigationToggle }) {
 
   return (
     <PolarisTopBar
-      // showNavigationToggle
+      showNavigationToggle
       userMenu={userMenuMarkup}
       // contextControl={storeSwitcherMarkup}
       // secondaryMenu={notificationsMenuMarkup}
